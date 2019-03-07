@@ -7,6 +7,8 @@ from torch import cuda
 from st_gumbel import gumbel_softmax
 from torch.nn.utils import clip_grad_norm_
 import copy
+from visualization import Visualizations
+import numpy as np
 
 # what do yot want to do?
 DEBUG = False
@@ -241,7 +243,10 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
     vocab = dataset['dicts']['vocab']
 
     all_train_losses = []
-    all_valid_losses = []
+    #all_valid_losses = []
+
+    # Initialize the visualization environment
+    vis = Visualizations()
 
     def trainEpoch(epoch, vocab):
         # shuffle
@@ -250,7 +255,7 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
         batchOrder = torch.randperm(len(trainData))
 
         model.train()
-        MT_f_e_Encoder.train()
+        MT_f_e_Encoder.eval()  # .train()
         MT_f_e_Encoder2.train()
 
         epoch_losses = []
@@ -277,25 +282,47 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
 
             model.zero_grad()
 
+            # (1) English to French
+
             with torch.no_grad():
                 bt_batch = back_translate_batch(batch, vocab, args, translator)
 
+
+            # (2) French to french latent space
+
             #with torch.no_grad():
             encStates1, context1, encStates2, context2, null_encS, null_context = MT_f_e_Encoder(bt_batch[0])
+            '''
+            # TODO - delete this part:
+            encStates12, context12, encStates22, context22, null_encS2, null_context2 = MT_f_e_Encoder2(bt_batch[0])
+            '''
 
             encStates = (null_encS, encStates1, encStates2)
             contexts = (null_context, context1, context2)
 
+            Z_1 = encStates1[1][0]
+            Z_2 = encStates2[1][0]
+            Z_null = null_encS[1][0]
+            '''
             Z_1 = context1[-1, :].detach()
             Z_2 = context2[-1, :].detach()
             Z_null = null_context[-1, :].detach() #torch.stack((null_context[0][-1],)*args.batch_size)
+            '''
             Zs = (Z_null, Z_1, Z_2)
 
-            # (2) non determinictic part:
+
+            # (3) Subtracting sentences - Decoder, Generator
+
             output_1_2, output_2_1, output_1_null, output_null_1, output_2_null, output_null_2 = model(encStates, contexts, Zs)
-
-            #del encStates, null_encS, encStates1, encStates2, context1, context2, contexts, null_context
-
+            #X_1_null = torch.transpose(gumbel_softmax(torch.transpose(model.generator(output_1_null), 0, 2), 0.0008), 0,2)  # .cuda # transpose
+            genX_1_null = model.generator(output_1_null)
+            #gumbs = []
+            #for j in range(genX_1_null.shape[0]):
+            #    gumb = gumbel_softmax(genX_1_null[j, :], 0.0008)
+            #    gumbs.append(gumb)
+            #X_1_null = torch.stack(gumbs)
+            softmax = nn.Softmax(-1)
+            X_1_null = softmax(genX_1_null)
 
             '''
             X_1_2 = torch.transpose(gumbel_softmax(torch.transpose(model.generator(output_1_2),0,2), 0.8), 0, 2) # .cuda
@@ -317,14 +344,33 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
             del output_2_1, X_2_1, _, context
             '''
 
+            # (4) MT English to French subtracted sentences
 
-            X_1_null = torch.transpose(gumbel_softmax(torch.transpose(model.generator(output_1_null),0,2), 0.8), 0, 2) # .cuda
             #with torch.no_grad():
-            X_1_null = translate_1hot_output(X_1_null, vocab, args, translator2)#.cuda()
-            _, context = MT_f_e_Encoder2(X_1_null)
-            Z_1_null = context[:, -1]
-            print_output(vocab, batch, X_1_null)
-            #del output_1_null, X_1_null, _, context
+            X_1_null_F = translate_1hot_output(X_1_null, vocab, args, translator2)#.cuda()
+            '''
+            # TODO - delete this part
+            for i in range(15):
+                print(list(X_1_null_F[i][0]).index(1))
+            X_1_null_F = translate_1hot_output(X_1_null, vocab, args, translator2)#.cuda()
+            for i in range(15):
+                print(list(X_1_null_F[i][0]).index(1))
+            '''
+
+            # (5) Encoding subtracted sentences to latent space
+            encS, context = MT_f_e_Encoder2(X_1_null_F)
+            '''
+            # TODO - delete this part:
+            # convert X_1_null_F to [1,2,50] tensor
+            list_of_indexes = torch.tensor([list(X_1_null_F[i][0]).index(1) for i in range(X_1_null_F.shape[0])]).cuda() # [50]
+            X_1_null_F_indexes = list_of_indexes.repeat(args.batch_size,2,1)
+            encS1, context1, _, _, _, _ = MT_f_e_Encoder(X_1_null_F_indexes)
+            '''
+
+            Z_1_null_F = encS[1][0]#[0, -1].unsqueeze(0)
+            # Z_1_null_F = context[:, -1]
+            print_output(vocab, batch, X_1_null_F)
+            # del output_1_null, X_1_null, _, context
 
 
             '''
@@ -359,8 +405,8 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
             #ae2_loss = Z_2 - Z_2_null # - Z_null
             #null1_loss = Z_null_1
             #null2_loss = Z_null_2
-            diff_loss = Z_1_null - Z_1
-
+            diff_loss = Z_1_null_F - Z_1
+            #diff2_loss = encStates1[0].flatten() - encS[0].flatten()
 
             #loss = inter_loss + ae1_loss + ae2_loss + null1_loss + null2_loss  # [64,500]
             #loss = ae1_loss + ae2_loss #+ null2_loss + null1_loss
@@ -370,23 +416,20 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
             loss = torch.mean(loss, 1)  # [64] # mean
             loss = torch.sum(loss)  # [1]
 
+            #epoch_losses.append(loss.item())
+            epoch_losses.append(loss.item())
 
             #print("batch loss = ", loss.data)
             loss.backward()
             clip_grad_norm_(model.parameters(), args.max_grad_norm)
             optim.step()
 
-            epoch_losses.append(loss.item())
-
-
-            '''
-            report_loss += loss
-            total_loss += loss
-            total_num_correct += num_correct
-            total_words += num_words
+            # Visualization data
             if i % args.log_interval == -1 % args.log_interval:
-                print(
-                    "Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f; closs: %6.4f; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed" %
+                vis.plot_loss(np.mean(epoch_losses), step)
+                epoch_losses.clear()
+                '''
+                print("Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f; closs: %6.4f; %3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed" %
                     (epoch, i + 1, len(trainData),
                      report_num_correct / report_tgt_words * 100,
                      math.exp(report_loss / args.log_interval),
@@ -398,9 +441,8 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
                 sys.stdout.flush()
                 report_loss = report_tgt_words = report_src_words = report_num_correct = report_closs = 0
                 start = time.time()
+                '''
 
-        # total loss (float32), total_words (int64), total_num_correct (int64) , total_words (int64)
-        '''
         return sum(epoch_losses) / float(len(epoch_losses))
 
 
@@ -412,6 +454,9 @@ def trainModel(model, trainData, validData, dataset, optim, MT_f_e_Encoder):
         print("")
         print("Epoch Train Loss: ", epoch_loss)
         all_train_losses.append(epoch_loss)
+
+        vis.plot_loss(np.mean(all_train_losses), epoch)
+        all_train_losses.clear()
 
         # (2) evaluate on the validation set
         #valid_loss = eval()

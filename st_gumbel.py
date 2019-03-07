@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 
 def sample_gumbel(shape, eps=1e-20):
-    U = torch.rand(shape).cuda() / 100
+    U = torch.rand(shape).cuda() / 1000 # this is what makes the gumbel softmax deterministic in our manner
     #U = torch.zeros(shape).cuda()
     return -Variable(torch.log(-torch.log(U + eps) + eps))
 
@@ -28,4 +28,4 @@ def gumbel_softmax(logits, temperature):
 
 if __name__ == '__main__':
     import math
-    print(gumbel_softmax(Variable(torch.cuda.FloatTensor([[math.log(0.1), math.log(0.4), math.log(0.3), math.log(0.2)]] * 20000)), 0.8).sum(dim=0))
+    print(gumbel_softmax(torch.cuda.FloatTensor([[math.log(0.1), math.log(0.4), math.log(0.3), math.log(0.2)]] * 20000), 0.8).sum(dim=0))

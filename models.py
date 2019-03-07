@@ -66,7 +66,7 @@ class Encoder(nn.Module):
         # input is subtracted sentences - [seq len X batch size X vocab size] - gumbel softmax output
         if input.shape[2]==self.word_lut.weight.shape[0]:
             emb_input = input@self.word_lut.weight # [seq len X batch size X emb size]
-            context, encStates = self.rnn(torch.transpose(emb_input,0,1), hidden)
+            context, encStates = self.rnn(emb_input, hidden)
             return encStates, context
 
         # input is original batch with 2 sentences. [batch size X 2 sents X seq length]
@@ -110,12 +110,12 @@ class Decoder(nn.Module):
             self.word_lut.weight.data.copy_(pretrained)
 
     # def forward(self, input, hidden, context, init_output):
-    def forward(self, encStates, contexts, init_outputs, Zs, sent=1, sub=2):
+    def forward(self, encStates, contexts, init_outputs, sent=1, sub=2):
         hidden = encStates[sent]
-        context = contexts[sent]
+        #context = contexts[sent]
 
-        hidden = (torch.zeros(encStates[sent][0].shape).cuda(),torch.zeros(encStates[sent][1].shape).cuda())
-        #context = torch.zeros(contexts[sub].shape).cuda()
+        #hidden = (torch.zeros(encStates[sent][0].shape).cuda(),torch.zeros(encStates[sent][1].shape).cuda())
+        context = torch.zeros(contexts[sub].shape).cuda()
 
 
         #emb = self.word_lut(input)
@@ -152,7 +152,8 @@ class Subtract_Decoder(nn.Module):
         #h_size = (batch_size, self.sub_decoder.hidden_size)
         #return context.data.new(*h_size).zero_()
         #condition = self.linear(context)
-        condition = ((context[0,:250]+context[0, -250:])/2).unsqueeze(0)
+        condition = context
+        ###condition = ((context[0,:250]+context[0, -250:])/2).unsqueeze(0)
         return condition
 
     def _fix_enc_hidden(self, h):
@@ -172,12 +173,12 @@ class Subtract_Decoder(nn.Module):
         init_output_2 = self.make_init_decoder_output(Zs[2])
         init_outputs = (init_output_null, init_output_1, init_output_2)
 
-        out_1_2 = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=1, sub=2)
-        out_2_1 = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=2, sub=1)
-        out_1_null = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=1, sub=0)
-        out_2_null = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=2, sub=0)
-        out_null_1 = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=0, sub=1)
-        out_null_2 = self.sub_decoder(encStates, contexts, init_outputs, Zs, sent=0, sub=2)
+        out_1_2 = self.sub_decoder(encStates, contexts, init_outputs, sent=1, sub=2)
+        out_2_1 = self.sub_decoder(encStates, contexts, init_outputs, sent=2, sub=1)
+        out_1_null = self.sub_decoder(encStates, contexts, init_outputs, sent=1, sub=0)
+        out_2_null = self.sub_decoder(encStates, contexts, init_outputs, sent=2, sub=0)
+        out_null_1 = self.sub_decoder(encStates, contexts, init_outputs, sent=0, sub=1)
+        out_null_2 = self.sub_decoder(encStates, contexts, init_outputs, sent=0, sub=2)
 
         return out_1_2, out_2_1, out_1_null, out_2_null, out_null_1, out_null_2
 
